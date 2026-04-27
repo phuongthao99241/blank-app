@@ -1,176 +1,299 @@
 import streamlit as st
 import pandas as pd
-import datetime
-from prophet import Prophet
-import numpy as np
-import os
-import plotly.express as px
+import io
+import re
 
-st.set_page_config(
-    page_title="📊 TV-Stimmungsanalyse",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Comparison Tool", layout="wide")
+st.title("🔍 Vertrags-/Asset- & Report-Vergleich")
 
-# Sidebar mit Firmenlogo und Name
-with st.sidebar:
-    #st.image("logo.png", width=200)
-    st.markdown("## SentimentInsights")
-    tab_choice = st.radio("Navigiere zu:", ["Dashboard", "KI-Planung", "Vergleich", "Bericht"])
+tab_de, tab_en = st.tabs(["🇩🇪 Deutsch", "🇬🇧 English"])
 
-st.title("📺 KI-gestützte TV-Stimmungsanalyse")
+# =========================
+# 🔧 COMMON FUNCTIONS
+# =========================
+
+TOL = 1.0
+
+def _try_parse_number(val):
+    if pd.isna(val):
+        return False, None
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        return True, float(val)
+
+    s = str(val).strip()
+    if s == "":
+        return False, None
+
+    s_clean = (
+        s.replace("\xa0", "")
+         .replace("€", "")
+         .replace("%", "")
+         .replace(" ", "")
+         .replace("’", "")
+         .replace("'", "")
+    )
+
+    try:
+        return True, float(s_clean.replace(".", "").replace(",", "."))
+    except:
+        pass
+
+    try:
+        return True, float(s_clean.replace(",", ""))
+    except:
+        pass
+
+    return False, None
+
+
+def nearly_equal(a, b, tol=TOL):
+    ok_a, fa = _try_parse_number(a)
+    ok_b, fb = _try_parse_number(b)
+    if ok_a and ok_b:
+        return abs(fa - fb) < tol
+    return False
+
+
+# =========================
+# 📊 CLOSING LOGIC
+# =========================
 
 @st.cache_data
-def generate_mock_comments(program, start_date, end_date):
-    dates = pd.date_range(start_date, end_date)
-    data = []
-    for date in dates:
-        for _ in range(np.random.randint(10, 20)):
-            sentiment = np.random.choice(["positive", "neutral", "negative"], p=[0.6, 0.25, 0.15])
-            data.append({
-                "date": date,
-                "program": program,
-                "text": f"Kommentar zu {program} am {date}",
-                "sentiment": sentiment
-            })
-    return pd.DataFrame(data)
+def clean_and_prepare(uploaded_file, id_col, asset_col):
+    df_raw = pd.read_excel(uploaded_file, sheet_name=0, header=None)
 
-def simulate_forecast(df, program, periods):
-    df_filtered = df[df["program"] == program]
-    grouped = df_filtered.groupby("date").apply(
-        lambda x: (x["sentiment"] == "positive").sum() / len(x)
-    ).reset_index()
-    grouped.columns = ["ds", "y"]
+    header_1 = df_raw.iloc[1]
+    header_2 = df_raw.iloc[2]
+    header_3 = df_raw.iloc[3]
 
-    model = Prophet(daily_seasonality=True)
-    model.fit(grouped)
-    future = model.make_future_dataframe(periods=periods)
-    forecast = model.predict(future)
+    header_1 = header_1.ffill()
+    header_2 = header_2.ffill()
 
-    fig = model.plot(forecast)
-    fig.set_size_inches(5, 2.5)
+    df_data = df_raw.iloc[4:].copy()
+    df_data.reset_index(drop=True, inplace=True)
 
-    trend = forecast["yhat"].iloc[-periods:].mean()
-    base = grouped["y"].mean()
-    delta = trend - base
+    columns_combined = []
+    for i in range(len(header_1)):
+        if i < 9:
+            columns_combined.append(header_1[i])
+        else:
+            beschreibung = re.sub(r"\s+", " ", str(header_1[i]).strip())
+            konto_nr = str(header_2[i]).strip()
+            soll_haben = str(header_3[i]).strip()
+            columns_combined.append(f"{beschreibung} - {konto_nr}_IFRS16 - {soll_haben}")
 
-    if delta > 0.05:
-        recommendation = "📈 Empfehlung: Positive Stimmung steigt – Promotion oder Fortsetzung empfohlen."
-    elif delta < -0.05:
-        recommendation = "📉 Empfehlung: Stimmung sinkt – Inhalte überdenken oder verändern."
+    df_data.columns = columns_combined
+
+    df_data[id_col] = df_data[id_col].fillna("").astype(str)
+    df_data[asset_col] = df_data[asset_col].fillna("").astype(str)
+
+    return df_data.set_index([id_col, asset_col])
+
+
+def compare_closing(df_test, df_prod, id_col, asset_col):
+    all_keys = sorted(set(df_test.index).union(set(df_prod.index)))
+    common_cols = df_test.columns.intersection(df_prod.columns)
+
+    results = []
+
+    for (vertrag, asset) in all_keys:
+        row = {id_col: vertrag, asset_col: asset}
+
+        if (vertrag, asset) not in df_test.index:
+            row["Differences"] = "Only in Prod"
+        elif (vertrag, asset) not in df_prod.index:
+            row["Differences"] = "Only in Test"
+        else:
+            diffs = []
+            for col in common_cols:
+                val_test = df_test.loc[(vertrag, asset), col]
+                val_prod = df_prod.loc[(vertrag, asset), col]
+
+                if isinstance(val_test, pd.Series): val_test = val_test.iloc[0]
+                if isinstance(val_prod, pd.Series): val_prod = val_prod.iloc[0]
+
+                if pd.isna(val_test) and pd.isna(val_prod):
+                    continue
+
+                if nearly_equal(val_test, val_prod):
+                    continue
+
+                if pd.isna(val_test) or pd.isna(val_prod) or val_test != val_prod:
+                    diffs.append(f"{col}: Test={val_test} / Prod={val_prod}")
+
+            row["Differences"] = "; ".join(diffs) if diffs else "None"
+
+        results.append(row)
+
+    df = pd.DataFrame(results)
+    return df[df["Differences"] != "None"]
+
+
+# =========================
+# 📑 REPORT LOGIC
+# =========================
+
+@st.cache_data
+def load_report(file):
+    if file.name.endswith(".csv"):
+        df_raw = pd.read_csv(file, header=None, dtype=str)
     else:
-        recommendation = "📊 Empfehlung: Stimmung stabil – keine Maßnahmen notwendig."
+        df_raw = pd.read_excel(file, header=None, dtype=str)
 
-    return fig, forecast, grouped, recommendation
+    header_row = None
+    for i in range(len(df_raw)):
+        row_str = " ".join(df_raw.iloc[i].astype(str)).lower()
+        if "system id" in row_str or "system-id" in row_str:
+            header_row = i
+            break
 
-program = st.sidebar.selectbox("Wähle ein Programm", ["Master Chef", "The Voice"])
-date_range = st.sidebar.date_input("Zeitraum wählen", [datetime.date(2025, 5, 1), datetime.date(2025, 5, 7)])
+    if header_row is None:
+        raise ValueError("System ID header not found")
 
-color_map = {
-    "positive": "green",
-    "neutral": "lightblue",
-    "negative": "red"
-}
+    df = df_raw.iloc[header_row:].copy()
+    df.columns = df.iloc[0]
+    df = df.iloc[1:].reset_index(drop=True)
 
-if tab_choice == "Dashboard":
-    df = generate_mock_comments(program, date_range[0], date_range[1])
-    df["weekday"] = df["date"].dt.day_name()
+    # remove total rows
+    for i in range(len(df)):
+        if "total" in " ".join(df.iloc[i].astype(str)).lower():
+            df = df.iloc[:i]
+            break
 
-    col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
-    col_kpi1.metric("📄 Kommentare", len(df))
-    col_kpi2.metric("😊 Positive", (df["sentiment"] == "positive").sum())
-    col_kpi3.metric("☹️ Negative", (df["sentiment"] == "negative").sum())
+    df.columns = [str(c).strip() for c in df.columns]
 
-    st.divider()
+    system_id_col = None
+    asset_id_col = None
 
-    col_main1, col_main2, col_main3 = st.columns([1.2, 2, 2])
+    for c in df.columns:
+        lc = c.lower()
+        if "system id" in lc or "system-id" in lc:
+            system_id_col = c
+        if "asset" in lc and "system id" in lc:
+            asset_id_col = c
 
-    with col_main1:
-        st.subheader("📊 Verteilung")
-        sentiment_count = df["sentiment"].value_counts().reset_index()
-        sentiment_count.columns = ["Sentiment", "Anzahl"]
-        fig_pie = px.pie(sentiment_count, names="Sentiment", values="Anzahl", hole=0.4,
-                         color="Sentiment", color_discrete_map=color_map)
-        st.plotly_chart(fig_pie, use_container_width=True)
+    if not system_id_col or not asset_id_col:
+        raise ValueError("ID columns not found")
 
-        st.subheader("📝 Beispielkommentare")
-        st.dataframe(df[["date", "text", "sentiment"]].sample(5), use_container_width=True)
+    df[system_id_col] = df[system_id_col].fillna("").astype(str)
+    df[asset_id_col] = df[asset_id_col].fillna("").astype(str)
 
-    with col_main2:
-        st.subheader("📈 Sentiment über Zeit")
-        df_day = df.groupby(["date", "sentiment"]).size().reset_index(name="Anzahl")
-        fig_time = px.bar(df_day, x="date", y="Anzahl", color="sentiment", barmode="group",
-                          color_discrete_map=color_map)
-        st.plotly_chart(fig_time, use_container_width=True)
+    df["KEY"] = df[system_id_col] + "||" + df[asset_id_col]
 
-        st.subheader("📅 Stimmung nach Wochentag")
-        df_wday = df.groupby(["weekday", "sentiment"]).size().reset_index(name="Anzahl")
-        fig_wday = px.bar(df_wday, x="weekday", y="Anzahl", color="sentiment", barmode="group",
-                          color_discrete_map=color_map)
-        st.plotly_chart(fig_wday, use_container_width=True)
+    return df.set_index("KEY")
 
-    with col_main3:
-        st.subheader("🔍 Histogramm")
-        fig_hist = px.histogram(df, x="sentiment", color="sentiment",
-                                title="Verteilung der Stimmung", color_discrete_map=color_map)
-        st.plotly_chart(fig_hist, use_container_width=True)
 
-        st.subheader("📥 Daten herunterladen")
-        csv = df.to_csv(index=False).encode("utf-8")
-        st.download_button("Exportiere als CSV", csv, f"{program}_sentiment.csv", "text/csv")
+def compare_reports(df_test, df_prod):
+    all_keys = sorted(set(df_test.index).union(set(df_prod.index)))
+    common_cols = df_test.columns.intersection(df_prod.columns)
 
-elif tab_choice == "KI-Planung":
-    st.subheader("🤖 KI-gestützte Prognose")
-    filename = f"sentiment_data_{program.replace(' ', '_')}.csv"
-    if os.path.exists(filename):
-        df = pd.read_csv(filename, parse_dates=["date"])
-        period_input = st.selectbox("Prognosezeitraum (Tage)", [14, 30])
-        if st.button("Prognose anzeigen"):
-            fig, forecast, grouped, recommendation = simulate_forecast(df, program, period_input)
-            st.markdown(f"**📌 Empfehlung:** {recommendation}")
-            st.pyplot(fig)
-    else:
-        st.warning("Bitte analysiere zuerst Daten im Dashboard.")
+    results = []
 
-elif tab_choice == "Vergleich":
-    st.subheader("📈 Vergleich zwischen Programmen")
-    compare_programs = st.multiselect("Programme auswählen", ["Master Chef", "The Voice"], default=["Master Chef", "The Voice"])
-    df_all = pd.DataFrame()
-    for prog in compare_programs:
-        file = f"sentiment_data_{prog.replace(' ', '_')}.csv"
-        if os.path.exists(file):
-            temp = pd.read_csv(file, parse_dates=["date"])
-            df_all = pd.concat([df_all, temp])
-    if not df_all.empty:
-        col1, col2 = st.columns(2)
-        with col1:
-            df_pos = df_all[df_all["sentiment"] == "positive"]
-            pos_trend = df_pos.groupby(["date", "program"]).size().reset_index(name="Anzahl")
-            fig_pos = px.line(pos_trend, x="date", y="Anzahl", color="program", title="Positive Kommentare")
-            st.plotly_chart(fig_pos, use_container_width=True)
-        with col2:
-            df_neg = df_all[df_all["sentiment"] == "negative"]
-            neg_trend = df_neg.groupby(["date", "program"]).size().reset_index(name="Anzahl")
-            fig_neg = px.line(neg_trend, x="date", y="Anzahl", color="program", title="Negative Kommentare")
-            st.plotly_chart(fig_neg, use_container_width=True)
-    else:
-        st.warning("Keine Vergleichsdaten vorhanden.")
+    for key in all_keys:
+        row = {"KEY": key}
 
-elif tab_choice == "Bericht":
-    st.subheader("📄 Wochenbericht")
-    df = pd.DataFrame()
-    for prog in ["Master Chef", "The Voice"]:
-        filename = f"sentiment_data_{prog.replace(' ', '_')}.csv"
-        if os.path.exists(filename):
-            df_prog = pd.read_csv(filename, parse_dates=["date"])
-            df = pd.concat([df, df_prog])
-    if not df.empty:
-        df["KW"] = df["date"].dt.isocalendar().week
-        report_programs = st.multiselect("Programme auswählen", ["Master Chef", "The Voice"], default=["Master Chef", "The Voice"])
-        df = df[df["program"].isin(report_programs)]
-        report = df.groupby(["program", "KW", "sentiment"]).size().unstack(fill_value=0).reset_index()
-        st.dataframe(report)
-        csv = report.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Bericht herunterladen", csv, "sentiment_report.csv", "text/csv")
-    else:
-        st.info("Bitte zuerst Daten analysieren.")
+        if key not in df_test.index:
+            row["Status"] = "Only in Prod"
+        elif key not in df_prod.index:
+            row["Status"] = "Only in Test"
+        else:
+            row["Status"] = "OK"
+
+            for col in common_cols:
+                val_test = df_test.loc[key, col]
+                val_prod = df_prod.loc[key, col]
+
+                if isinstance(val_test, pd.Series): val_test = val_test.iloc[0]
+                if isinstance(val_prod, pd.Series): val_prod = val_prod.iloc[0]
+
+                ok_a, fa = _try_parse_number(val_test)
+                ok_b, fb = _try_parse_number(val_prod)
+
+                if ok_a and ok_b:
+                    row[col] = fa - fb
+                else:
+                    row[col] = str(val_test) == str(val_prod)
+
+        results.append(row)
+
+    return pd.DataFrame(results)
+
+
+# =========================
+# 🇩🇪 GERMAN UI
+# =========================
+
+with tab_de:
+    mode = st.radio("Vergleichstyp wählen", ["Closing", "Report"], key="mode_de")
+
+    file_test = st.file_uploader("Test-Datei", type=["xlsx", "csv"], key="test_de")
+    file_prod = st.file_uploader("Prod-Datei", type=["xlsx", "csv"], key="prod_de")
+
+    if file_test and file_prod:
+
+        if mode == "Closing":
+            id_col = "Vertrags-ID"
+            asset_col = "Asset-ID"
+
+            df_test = clean_and_prepare(file_test, id_col, asset_col)
+            df_prod = clean_and_prepare(file_prod, id_col, asset_col)
+
+            df_diff = compare_closing(df_test, df_prod, id_col, asset_col)
+
+        else:
+            df_test = load_report(file_test)
+            df_prod = load_report(file_prod)
+
+            df_diff = compare_reports(df_test, df_prod)
+
+        st.dataframe(df_diff, use_container_width=True)
+
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+            df_diff.to_excel(writer, index=False)
+
+        st.download_button(
+            "📥 Ergebnis herunterladen",
+            data=out.getvalue(),
+            file_name="vergleich.xlsx"
+        )
+
+
+# =========================
+# 🇬🇧 ENGLISH UI
+# =========================
+
+with tab_en:
+    mode = st.radio("Select Comparison Type", ["Closing", "Report"], key="mode_en")
+
+    file_test = st.file_uploader("Test File", type=["xlsx", "csv"], key="test_en")
+    file_prod = st.file_uploader("Prod File", type=["xlsx", "csv"], key="prod_en")
+
+    if file_test and file_prod:
+
+        if mode == "Closing":
+            id_col = "Contract ID"
+            asset_col = "Asset ID"
+
+            df_test = clean_and_prepare(file_test, id_col, asset_col)
+            df_prod = clean_and_prepare(file_prod, id_col, asset_col)
+
+            df_diff = compare_closing(df_test, df_prod, id_col, asset_col)
+
+        else:
+            df_test = load_report(file_test)
+            df_prod = load_report(file_prod)
+
+            df_diff = compare_reports(df_test, df_prod)
+
+        st.dataframe(df_diff, use_container_width=True)
+
+        out = io.BytesIO()
+        with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
+            df_diff.to_excel(writer, index=False)
+
+        st.download_button(
+            "📥 Download result",
+            data=out.getvalue(),
+            file_name="comparison.xlsx"
+        )
