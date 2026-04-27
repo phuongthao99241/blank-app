@@ -133,7 +133,7 @@ def compare_closing(df_test, df_prod, id_col, asset_col):
 
 
 # =========================
-# 📑 REPORT (NEW LOGIC)
+# 📑 REPORT LOADING
 # =========================
 
 @st.cache_data
@@ -146,7 +146,7 @@ def load_report(file):
     else:
         df_raw = pd.read_excel(file, header=None, dtype=str)
 
-    # find header
+    # find header row
     header_row = None
     for i in range(len(df_raw)):
         if "system" in row_to_string(df_raw.iloc[i]):
@@ -154,7 +154,7 @@ def load_report(file):
             break
 
     if header_row is None:
-        st.error("Header row not found")
+        st.error("❌ Header row not found")
         st.write(df_raw.head(20))
         st.stop()
 
@@ -162,7 +162,7 @@ def load_report(file):
     df.columns = df.iloc[0]
     df = df.iloc[1:].reset_index(drop=True)
 
-    # remove total
+    # remove total rows
     for i in range(len(df)):
         if "total" in row_to_string(df.iloc[i]):
             df = df.iloc[:i]
@@ -173,16 +173,69 @@ def load_report(file):
     return df
 
 
-def compare_reports(df_test, df_prod, id_col, asset_col):
+# =========================
+# 🔍 ID DETECTION
+# =========================
 
-    df_test[id_col] = df_test[id_col].fillna("").astype(str)
-    df_test[asset_col] = df_test[asset_col].fillna("").astype(str)
+def find_id_columns(df):
+    contract_col = None
+    asset_col = None
 
-    df_prod[id_col] = df_prod[id_col].fillna("").astype(str)
-    df_prod[asset_col] = df_prod[asset_col].fillna("").astype(str)
+    for c in df.columns:
+        lc = str(c).lower().replace("-", " ").replace("_", " ").strip()
 
-    df_test["KEY"] = df_test[id_col] + "||" + df_test[asset_col]
-    df_prod["KEY"] = df_prod[id_col] + "||" + df_prod[asset_col]
+        if ("vertrag" in lc or "contract" in lc) and "id" in lc:
+            contract_col = c
+
+        if "asset" in lc and "id" in lc:
+            asset_col = c
+
+    # fallback
+    if contract_col is None:
+        for c in df.columns:
+            if "vertrag" in str(c).lower() or "contract" in str(c).lower():
+                contract_col = c
+                break
+
+    if asset_col is None:
+        for c in df.columns:
+            if "asset" in str(c).lower():
+                asset_col = c
+                break
+
+    return contract_col, asset_col
+
+
+# =========================
+# 📊 REPORT COMPARISON
+# =========================
+
+def compare_reports(df_test, df_prod):
+
+    id_test, asset_test = find_id_columns(df_test)
+    id_prod, asset_prod = find_id_columns(df_prod)
+
+    if not id_test or not asset_test:
+        st.error("❌ Could not detect ID columns in TEST")
+        st.write(df_test.columns.tolist())
+        st.stop()
+
+    if not id_prod or not asset_prod:
+        st.error("❌ Could not detect ID columns in PROD")
+        st.write(df_prod.columns.tolist())
+        st.stop()
+
+    df_test = df_test.rename(columns={id_test: "ID", asset_test: "ASSET"})
+    df_prod = df_prod.rename(columns={id_prod: "ID", asset_prod: "ASSET"})
+
+    df_test["ID"] = df_test["ID"].fillna("").astype(str)
+    df_test["ASSET"] = df_test["ASSET"].fillna("").astype(str)
+
+    df_prod["ID"] = df_prod["ID"].fillna("").astype(str)
+    df_prod["ASSET"] = df_prod["ASSET"].fillna("").astype(str)
+
+    df_test["KEY"] = df_test["ID"] + "||" + df_test["ASSET"]
+    df_prod["KEY"] = df_prod["ID"] + "||" + df_prod["ASSET"]
 
     df_test = df_test.set_index("KEY")
     df_prod = df_prod.set_index("KEY")
@@ -196,7 +249,7 @@ def compare_reports(df_test, df_prod, id_col, asset_col):
     common_cols = [
         c for c in df_test.columns.intersection(df_prod.columns)
         if not is_system_col(c)
-        and c not in [id_col, asset_col]
+        and c not in ["ID", "ASSET"]
     ]
 
     results = []
@@ -205,10 +258,10 @@ def compare_reports(df_test, df_prod, id_col, asset_col):
         row_test = df_test.loc[key] if key in df_test.index else pd.Series()
         row_prod = df_prod.loc[key] if key in df_prod.index else pd.Series()
 
-        contract = row_test.get(id_col, row_prod.get(id_col, ""))
-        asset = row_test.get(asset_col, row_prod.get(asset_col, ""))
+        contract = row_test.get("ID", row_prod.get("ID", ""))
+        asset = row_test.get("ASSET", row_prod.get("ASSET", ""))
 
-        row_result = {id_col: contract, asset_col: asset}
+        row_result = {"ID": contract, "ASSET": asset}
 
         for col in common_cols:
             val_test = row_test.get(col, None)
@@ -228,7 +281,7 @@ def compare_reports(df_test, df_prod, id_col, asset_col):
 
 
 # =========================
-# 🇩🇪 GERMAN UI
+# 🇩🇪 UI
 # =========================
 
 with tab_de:
@@ -247,7 +300,7 @@ with tab_de:
         else:
             df_test = load_report(file_test)
             df_prod = load_report(file_prod)
-            df_diff = compare_reports(df_test, df_prod, "Vertrags-ID", "Asset-ID")
+            df_diff = compare_reports(df_test, df_prod)
 
         st.dataframe(df_diff, use_container_width=True)
 
@@ -259,7 +312,7 @@ with tab_de:
 
 
 # =========================
-# 🇬🇧 ENGLISH UI
+# 🇬🇧 UI
 # =========================
 
 with tab_en:
@@ -278,7 +331,7 @@ with tab_en:
         else:
             df_test = load_report(file_test)
             df_prod = load_report(file_prod)
-            df_diff = compare_reports(df_test, df_prod, "Contract ID", "Asset ID")
+            df_diff = compare_reports(df_test, df_prod)
 
         st.dataframe(df_diff, use_container_width=True)
 
