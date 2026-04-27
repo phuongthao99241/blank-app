@@ -188,20 +188,39 @@ def load_report(file):
 
     df.columns = [str(c).strip() for c in df.columns]
 
-    # --- detect ID columns ---
+    # --- detect ID columns (robust) ---
     system_id_col = None
     asset_id_col = None
-
+    
     for c in df.columns:
-        lc = c.lower()
-        if "system id" in lc or "system-id" in lc:
+        lc = c.lower().replace("-", " ").replace("_", " ").strip()
+    
+        # detect system id
+        if "system" in lc and "id" in lc and "asset" not in lc:
             system_id_col = c
-        if "asset" in lc and "system id" in lc:
+    
+        # detect asset system id
+        if "asset" in lc and "id" in lc:
             asset_id_col = c
-
+    
+    # fallback: if still not found, try looser match
+    if system_id_col is None:
+        for c in df.columns:
+            if "system" in c.lower():
+                system_id_col = c
+                break
+    
+    if asset_id_col is None:
+        for c in df.columns:
+            if "asset" in c.lower():
+                asset_id_col = c
+                break
+    
+    # final safety check
     if not system_id_col or not asset_id_col:
+        st.error("❌ Could not detect ID columns. Available columns:")
+        st.write(df.columns.tolist())
         raise ValueError("ID columns not found")
-
     df[system_id_col] = df[system_id_col].fillna("").astype(str)
     df[asset_id_col] = df[asset_id_col].fillna("").astype(str)
 
