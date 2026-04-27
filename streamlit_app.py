@@ -8,14 +8,15 @@ st.title("🔍 Vertrags-/Asset- & Report-Vergleich")
 
 tab_de, tab_en = st.tabs(["🇩🇪 Deutsch", "🇬🇧 English"])
 
-# =========================
-# 🔧 COMMON HELPERS
-# =========================
-
 TOL = 1.0
+
+# =========================
+# 🔧 HELPERS
+# =========================
 
 def row_to_string(row):
     return " ".join(row.fillna("").astype(str).tolist()).lower()
+
 
 def _try_parse_number(val):
     if pd.isna(val):
@@ -58,7 +59,7 @@ def nearly_equal(a, b, tol=TOL):
 
 
 # =========================
-# 📊 CLOSING LOGIC
+# 📊 CLOSING
 # =========================
 
 @st.cache_data
@@ -72,8 +73,7 @@ def clean_and_prepare(uploaded_file, id_col, asset_col):
     header_1 = header_1.ffill()
     header_2 = header_2.ffill()
 
-    df_data = df_raw.iloc[4:].copy()
-    df_data.reset_index(drop=True, inplace=True)
+    df_data = df_raw.iloc[4:].copy().reset_index(drop=True)
 
     columns_combined = []
     for i in range(len(header_1)):
@@ -133,54 +133,36 @@ def compare_closing(df_test, df_prod, id_col, asset_col):
 
 
 # =========================
-# 📑 REPORT LOGIC
+# 📑 REPORT (NEW LOGIC)
 # =========================
 
 @st.cache_data
 def load_report(file):
-
-    # --- robust CSV / Excel loading ---
     if file.name.endswith(".csv"):
         try:
-            df_raw = pd.read_csv(
-                file,
-                header=None,
-                dtype=str,
-                sep=None,
-                engine="python",
-                encoding="utf-8",
-                on_bad_lines="skip"
-            )
+            df_raw = pd.read_csv(file, header=None, dtype=str, sep=None, engine="python", encoding="utf-8", on_bad_lines="skip")
         except:
-            df_raw = pd.read_csv(
-                file,
-                header=None,
-                dtype=str,
-                sep=None,
-                engine="python",
-                encoding="latin1",
-                on_bad_lines="skip"
-            )
+            df_raw = pd.read_csv(file, header=None, dtype=str, sep=None, engine="python", encoding="latin1", on_bad_lines="skip")
     else:
         df_raw = pd.read_excel(file, header=None, dtype=str)
 
-    # --- find header row ---
+    # find header
     header_row = None
     for i in range(len(df_raw)):
-        row_str = row_to_string(df_raw.iloc[i])
-        if "system id" in row_str or "system-id" in row_str:
+        if "system" in row_to_string(df_raw.iloc[i]):
             header_row = i
             break
 
     if header_row is None:
-        raise ValueError("System ID header not found")
+        st.error("Header row not found")
+        st.write(df_raw.head(20))
+        st.stop()
 
-    # --- set header ---
     df = df_raw.iloc[header_row:].copy()
     df.columns = df.iloc[0]
     df = df.iloc[1:].reset_index(drop=True)
 
-    # --- remove total rows ---
+    # remove total
     for i in range(len(df)):
         if "total" in row_to_string(df.iloc[i]):
             df = df.iloc[:i]
@@ -188,79 +170,59 @@ def load_report(file):
 
     df.columns = [str(c).strip() for c in df.columns]
 
-    # --- detect ID columns (robust) ---
-    system_id_col = None
-    asset_id_col = None
-    
-    for c in df.columns:
-        lc = c.lower().replace("-", " ").replace("_", " ").strip()
-    
-        # detect system id
-        if "system" in lc and "id" in lc and "asset" not in lc:
-            system_id_col = c
-    
-        # detect asset system id
-        if "asset" in lc and "id" in lc:
-            asset_id_col = c
-    
-    # fallback: if still not found, try looser match
-    if system_id_col is None:
-        for c in df.columns:
-            if "system" in c.lower():
-                system_id_col = c
-                break
-    
-    if asset_id_col is None:
-        for c in df.columns:
-            if "asset" in c.lower():
-                asset_id_col = c
-                break
-    
-    # final safety check
-    if not system_id_col or not asset_id_col:
-        st.error("❌ Could not detect ID columns. Available columns:")
-        st.write(df.columns.tolist())
-        raise ValueError("ID columns not found")
-    df[system_id_col] = df[system_id_col].fillna("").astype(str)
-    df[asset_id_col] = df[asset_id_col].fillna("").astype(str)
-
-    df["KEY"] = df[system_id_col] + "||" + df[asset_id_col]
-
-    return df.set_index("KEY")
+    return df
 
 
-def compare_reports(df_test, df_prod):
+def compare_reports(df_test, df_prod, id_col, asset_col):
+
+    df_test[id_col] = df_test[id_col].fillna("").astype(str)
+    df_test[asset_col] = df_test[asset_col].fillna("").astype(str)
+
+    df_prod[id_col] = df_prod[id_col].fillna("").astype(str)
+    df_prod[asset_col] = df_prod[asset_col].fillna("").astype(str)
+
+    df_test["KEY"] = df_test[id_col] + "||" + df_test[asset_col]
+    df_prod["KEY"] = df_prod[id_col] + "||" + df_prod[asset_col]
+
+    df_test = df_test.set_index("KEY")
+    df_prod = df_prod.set_index("KEY")
+
     all_keys = sorted(set(df_test.index).union(set(df_prod.index)))
-    common_cols = df_test.columns.intersection(df_prod.columns)
+
+    def is_system_col(col):
+        lc = col.lower()
+        return "system" in lc and "id" in lc
+
+    common_cols = [
+        c for c in df_test.columns.intersection(df_prod.columns)
+        if not is_system_col(c)
+        and c not in [id_col, asset_col]
+    ]
 
     results = []
 
     for key in all_keys:
-        row = {"KEY": key}
+        row_test = df_test.loc[key] if key in df_test.index else pd.Series()
+        row_prod = df_prod.loc[key] if key in df_prod.index else pd.Series()
 
-        if key not in df_test.index:
-            row["Status"] = "Only in Prod"
-        elif key not in df_prod.index:
-            row["Status"] = "Only in Test"
-        else:
-            row["Status"] = "OK"
+        contract = row_test.get(id_col, row_prod.get(id_col, ""))
+        asset = row_test.get(asset_col, row_prod.get(asset_col, ""))
 
-            for col in common_cols:
-                val_test = df_test.loc[key, col]
-                val_prod = df_prod.loc[key, col]
+        row_result = {id_col: contract, asset_col: asset}
 
-                if isinstance(val_test, pd.Series): val_test = val_test.iloc[0]
-                if isinstance(val_prod, pd.Series): val_prod = val_prod.iloc[0]
+        for col in common_cols:
+            val_test = row_test.get(col, None)
+            val_prod = row_prod.get(col, None)
 
-                ok_a, fa = _try_parse_number(val_test)
-                ok_b, fb = _try_parse_number(val_prod)
+            ok_a, fa = _try_parse_number(val_test)
+            ok_b, fb = _try_parse_number(val_prod)
 
-                if ok_a and ok_b:
-                    row[col] = fa - fb
-                else:
-                    row[col] = str(val_test) == str(val_prod)
+            if ok_a and ok_b:
+                row_result[col] = fa - fb
+            else:
+                row_result[col] = str(val_test) == str(val_prod)
 
-        results.append(row)
+        results.append(row_result)
 
     return pd.DataFrame(results)
 
@@ -270,27 +232,22 @@ def compare_reports(df_test, df_prod):
 # =========================
 
 with tab_de:
-    mode = st.radio("Vergleichstyp wählen", ["Closing", "Report"], key="mode_de")
+    mode = st.radio("Vergleichstyp wählen", ["Closing", "Report"])
 
-    file_test = st.file_uploader("Test-Datei", type=["xlsx", "csv"], key="test_de")
-    file_prod = st.file_uploader("Prod-Datei", type=["xlsx", "csv"], key="prod_de")
+    file_test = st.file_uploader("Test-Datei", type=["xlsx", "csv"], key="de1")
+    file_prod = st.file_uploader("Prod-Datei", type=["xlsx", "csv"], key="de2")
 
     if file_test and file_prod:
 
         if mode == "Closing":
-            id_col = "Vertrags-ID"
-            asset_col = "Asset-ID"
-
-            df_test = clean_and_prepare(file_test, id_col, asset_col)
-            df_prod = clean_and_prepare(file_prod, id_col, asset_col)
-
-            df_diff = compare_closing(df_test, df_prod, id_col, asset_col)
+            df_test = clean_and_prepare(file_test, "Vertrags-ID", "Asset-ID")
+            df_prod = clean_and_prepare(file_prod, "Vertrags-ID", "Asset-ID")
+            df_diff = compare_closing(df_test, df_prod, "Vertrags-ID", "Asset-ID")
 
         else:
             df_test = load_report(file_test)
             df_prod = load_report(file_prod)
-
-            df_diff = compare_reports(df_test, df_prod)
+            df_diff = compare_reports(df_test, df_prod, "Vertrags-ID", "Asset-ID")
 
         st.dataframe(df_diff, use_container_width=True)
 
@@ -306,27 +263,22 @@ with tab_de:
 # =========================
 
 with tab_en:
-    mode = st.radio("Select Comparison Type", ["Closing", "Report"], key="mode_en")
+    mode = st.radio("Select Comparison Type", ["Closing", "Report"])
 
-    file_test = st.file_uploader("Test File", type=["xlsx", "csv"], key="test_en")
-    file_prod = st.file_uploader("Prod File", type=["xlsx", "csv"], key="prod_en")
+    file_test = st.file_uploader("Test File", type=["xlsx", "csv"], key="en1")
+    file_prod = st.file_uploader("Prod File", type=["xlsx", "csv"], key="en2")
 
     if file_test and file_prod:
 
         if mode == "Closing":
-            id_col = "Contract ID"
-            asset_col = "Asset ID"
-
-            df_test = clean_and_prepare(file_test, id_col, asset_col)
-            df_prod = clean_and_prepare(file_prod, id_col, asset_col)
-
-            df_diff = compare_closing(df_test, df_prod, id_col, asset_col)
+            df_test = clean_and_prepare(file_test, "Contract ID", "Asset ID")
+            df_prod = clean_and_prepare(file_prod, "Contract ID", "Asset ID")
+            df_diff = compare_closing(df_test, df_prod, "Contract ID", "Asset ID")
 
         else:
             df_test = load_report(file_test)
             df_prod = load_report(file_prod)
-
-            df_diff = compare_reports(df_test, df_prod)
+            df_diff = compare_reports(df_test, df_prod, "Contract ID", "Asset ID")
 
         st.dataframe(df_diff, use_container_width=True)
 
