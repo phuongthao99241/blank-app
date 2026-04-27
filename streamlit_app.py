@@ -31,13 +31,13 @@ def _try_parse_number(val):
 @st.cache_data
 def load_report(file):
 
-    # ✅ force correct separator
+    # 1. read raw CSV correctly
     try:
         df_raw = pd.read_csv(
             file,
             header=None,
             dtype=str,
-            sep=";",   # 🔥 FIX
+            sep=";",   # 🔥 correct delimiter
             encoding="utf-8",
             on_bad_lines="skip"
         )
@@ -46,35 +46,48 @@ def load_report(file):
             file,
             header=None,
             dtype=str,
-            sep=";",   # 🔥 FIX
+            sep=";",
             encoding="latin1",
             on_bad_lines="skip"
         )
 
-    # 🔍 find header row (first column = System-ID)
+    # 2. find header row EXACTLY where first column == System-ID
     header_row = None
-    for i in range(len(df_raw)):
-        first_cell = str(df_raw.iloc[i, 0]).strip().lower()
 
-        if "system-id" in first_cell or "system id" in first_cell:
+    for i in range(len(df_raw)):
+        first_cell = str(df_raw.iloc[i, 0]).strip()
+
+        if first_cell.lower() in ["system-id", "system id"]:
             header_row = i
             break
 
     if header_row is None:
-        st.error("❌ Header row not found")
+        st.error("❌ Could not find header row (System-ID)")
         st.write(df_raw.head(10))
         st.stop()
 
-    # 🎯 build correct dataframe
+    # 3. build dataframe from that row
     df = df_raw.iloc[header_row:].copy()
+
+    # first row becomes header
     df.columns = df.iloc[0]
+
+    # remove header row from data
     df = df.iloc[1:].reset_index(drop=True)
 
-    # clean column names
+    # 4. clean column names
     df.columns = [str(c).strip() for c in df.columns]
 
-    # ❌ remove TOTAL rows
-    df = df[~df.apply(lambda row: "total" in " ".join(row.fillna("").astype(str)).lower(), axis=1)]
+    # 5. remove TOTAL rows (and everything after if needed)
+    total_index = None
+    for i in range(len(df)):
+        row_text = " ".join(df.iloc[i].fillna("").astype(str)).lower()
+        if "total" in row_text:
+            total_index = i
+            break
+
+    if total_index is not None:
+        df = df.iloc[:total_index]
 
     return df
 
