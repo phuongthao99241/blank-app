@@ -9,10 +9,13 @@ st.title("🔍 Vertrags-/Asset- & Report-Vergleich")
 tab_de, tab_en = st.tabs(["🇩🇪 Deutsch", "🇬🇧 English"])
 
 # =========================
-# 🔧 COMMON FUNCTIONS
+# 🔧 COMMON HELPERS
 # =========================
 
 TOL = 1.0
+
+def row_to_string(row):
+    return " ".join(row.fillna("").astype(str).tolist()).lower()
 
 def _try_parse_number(val):
     if pd.isna(val):
@@ -60,26 +63,7 @@ def nearly_equal(a, b, tol=TOL):
 
 @st.cache_data
 def clean_and_prepare(uploaded_file, id_col, asset_col):
-    try:
-        df_raw = pd.read_csv(
-            file,
-            header=None,
-            dtype=str,
-            sep=None,
-            engine="python",
-            encoding="utf-8",
-            on_bad_lines="skip"
-        )
-    except:
-        df_raw = pd.read_csv(
-        file,
-        header=None,
-        dtype=str,
-        sep=None,
-        engine="python",
-        encoding="latin1",
-        on_bad_lines="skip"
-    )
+    df_raw = pd.read_excel(uploaded_file, sheet_name=0, header=None)
 
     header_1 = df_raw.iloc[1]
     header_2 = df_raw.iloc[2]
@@ -154,14 +138,36 @@ def compare_closing(df_test, df_prod, id_col, asset_col):
 
 @st.cache_data
 def load_report(file):
+
+    # --- robust CSV / Excel loading ---
     if file.name.endswith(".csv"):
-        df_raw = pd.read_csv(file, header=None, dtype=str)
+        try:
+            df_raw = pd.read_csv(
+                file,
+                header=None,
+                dtype=str,
+                sep=None,
+                engine="python",
+                encoding="utf-8",
+                on_bad_lines="skip"
+            )
+        except:
+            df_raw = pd.read_csv(
+                file,
+                header=None,
+                dtype=str,
+                sep=None,
+                engine="python",
+                encoding="latin1",
+                on_bad_lines="skip"
+            )
     else:
         df_raw = pd.read_excel(file, header=None, dtype=str)
 
+    # --- find header row ---
     header_row = None
     for i in range(len(df_raw)):
-        row_str = " ".join(df_raw.iloc[i].astype(str)).lower()
+        row_str = row_to_string(df_raw.iloc[i])
         if "system id" in row_str or "system-id" in row_str:
             header_row = i
             break
@@ -169,18 +175,20 @@ def load_report(file):
     if header_row is None:
         raise ValueError("System ID header not found")
 
+    # --- set header ---
     df = df_raw.iloc[header_row:].copy()
     df.columns = df.iloc[0]
     df = df.iloc[1:].reset_index(drop=True)
 
-    # remove total rows
+    # --- remove total rows ---
     for i in range(len(df)):
-        if "total" in " ".join(df.iloc[i].astype(str)).lower():
+        if "total" in row_to_string(df.iloc[i]):
             df = df.iloc[:i]
             break
 
     df.columns = [str(c).strip() for c in df.columns]
 
+    # --- detect ID columns ---
     system_id_col = None
     asset_id_col = None
 
@@ -271,11 +279,7 @@ with tab_de:
         with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
             df_diff.to_excel(writer, index=False)
 
-        st.download_button(
-            "📥 Ergebnis herunterladen",
-            data=out.getvalue(),
-            file_name="vergleich.xlsx"
-        )
+        st.download_button("📥 Ergebnis herunterladen", data=out.getvalue(), file_name="vergleich.xlsx")
 
 
 # =========================
@@ -311,8 +315,4 @@ with tab_en:
         with pd.ExcelWriter(out, engine="xlsxwriter") as writer:
             df_diff.to_excel(writer, index=False)
 
-        st.download_button(
-            "📥 Download result",
-            data=out.getvalue(),
-            file_name="comparison.xlsx"
-        )
+        st.download_button("📥 Download result", data=out.getvalue(), file_name="comparison.xlsx")
