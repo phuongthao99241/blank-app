@@ -60,7 +60,26 @@ def nearly_equal(a, b, tol=TOL):
 
 @st.cache_data
 def clean_and_prepare(uploaded_file, id_col, asset_col):
-    df_raw = pd.read_excel(uploaded_file, sheet_name=0, header=None)
+    try:
+        df_raw = pd.read_csv(
+            file,
+            header=None,
+            dtype=str,
+            sep=None,
+            engine="python",
+            encoding="utf-8",
+            on_bad_lines="skip"
+        )
+    except:
+        df_raw = pd.read_csv(
+        file,
+        header=None,
+        dtype=str,
+        sep=None,
+        engine="python",
+        encoding="latin1",
+        on_bad_lines="skip"
+    )
 
     header_1 = df_raw.iloc[1]
     header_2 = df_raw.iloc[2]
