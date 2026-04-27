@@ -31,14 +31,13 @@ def _try_parse_number(val):
 @st.cache_data
 def load_report(file):
 
-    # read raw (no header!)
+    # ✅ force correct separator
     try:
         df_raw = pd.read_csv(
             file,
             header=None,
             dtype=str,
-            sep=None,
-            engine="python",
+            sep=";",   # 🔥 FIX
             encoding="utf-8",
             on_bad_lines="skip"
         )
@@ -47,28 +46,26 @@ def load_report(file):
             file,
             header=None,
             dtype=str,
-            sep=None,
-            engine="python",
+            sep=";",   # 🔥 FIX
             encoding="latin1",
             on_bad_lines="skip"
         )
 
-    # 🔍 find header row (FIRST COLUMN == "System ID")
+    # 🔍 find header row (first column = System-ID)
     header_row = None
-
     for i in range(len(df_raw)):
         first_cell = str(df_raw.iloc[i, 0]).strip().lower()
 
-        if "system id" in first_cell or "system-id" in first_cell:
+        if "system-id" in first_cell or "system id" in first_cell:
             header_row = i
             break
 
     if header_row is None:
-        st.error("❌ Could not find header row (System ID)")
-        st.write(df_raw.head(20))
+        st.error("❌ Header row not found")
+        st.write(df_raw.head(10))
         st.stop()
 
-    # 🎯 build dataframe from header
+    # 🎯 build correct dataframe
     df = df_raw.iloc[header_row:].copy()
     df.columns = df.iloc[0]
     df = df.iloc[1:].reset_index(drop=True)
@@ -76,7 +73,7 @@ def load_report(file):
     # clean column names
     df.columns = [str(c).strip() for c in df.columns]
 
-    # ❌ remove total rows
+    # ❌ remove TOTAL rows
     df = df[~df.apply(lambda row: "total" in " ".join(row.fillna("").astype(str)).lower(), axis=1)]
 
     return df
