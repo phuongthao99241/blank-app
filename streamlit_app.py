@@ -31,10 +31,11 @@ def _try_parse_number(val):
 @st.cache_data
 def load_report(file):
 
-    # robust CSV loading
+    # read raw (no header!)
     try:
-        df = pd.read_csv(
+        df_raw = pd.read_csv(
             file,
+            header=None,
             dtype=str,
             sep=None,
             engine="python",
@@ -42,8 +43,9 @@ def load_report(file):
             on_bad_lines="skip"
         )
     except:
-        df = pd.read_csv(
+        df_raw = pd.read_csv(
             file,
+            header=None,
             dtype=str,
             sep=None,
             engine="python",
@@ -51,11 +53,31 @@ def load_report(file):
             on_bad_lines="skip"
         )
 
+    # 🔍 find header row (FIRST COLUMN == "System ID")
+    header_row = None
+
+    for i in range(len(df_raw)):
+        first_cell = str(df_raw.iloc[i, 0]).strip().lower()
+
+        if "system id" in first_cell or "system-id" in first_cell:
+            header_row = i
+            break
+
+    if header_row is None:
+        st.error("❌ Could not find header row (System ID)")
+        st.write(df_raw.head(20))
+        st.stop()
+
+    # 🎯 build dataframe from header
+    df = df_raw.iloc[header_row:].copy()
+    df.columns = df.iloc[0]
+    df = df.iloc[1:].reset_index(drop=True)
+
     # clean column names
     df.columns = [str(c).strip() for c in df.columns]
 
-    # remove total rows
-    df = df[~df.apply(lambda row: "total" in row_to_string(row), axis=1)]
+    # ❌ remove total rows
+    df = df[~df.apply(lambda row: "total" in " ".join(row.fillna("").astype(str)).lower(), axis=1)]
 
     return df
 
